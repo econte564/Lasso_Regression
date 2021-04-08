@@ -1,0 +1,178 @@
+---
+title: "Group Lasso Regression"
+output:
+  prettydoc::html_pretty:
+    df_print: paged
+    highlight: vignette
+    theme: cayman
+    toc: yes
+    toc_depth: 5
+  slidy_presentation:
+    highlight: default
+  pdf_document:
+    toc: yes
+    toc_depth: 5
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '5'
+  word_document:
+    toc: yes
+    toc_depth: '5'
+  ioslides_presentation:
+    css:
+    - css/fonts.css
+    - css/custom.css
+    - css/title-slide.css
+    - css/slide-background.css
+    includes:
+      before_body: html/title.html
+    toc: yes
+    transition: default
+    widescreen: yes
+  beamer_presentation:
+    colortheme: lily
+    fig_caption: no
+    fig_height: 15
+    fig_width: 15
+    fonttheme: structurebold
+    theme: Hannover
+    toc: yes
+course: High Dimensional Data Analysis
+subtitle: 'Apa Marco, Conte Enrico , Filip Sara'
+---
+
+```{r setup, include=FALSE}
+# Use 'verbatim = TRUE' as chunk option to show chunk code as is
+require(knitr)
+require(pandoc)
+knitr::include_graphics
+hook_source_def = knit_hooks$get('source')
+knit_hooks$set(source = function(x, options){
+  if (!is.null(options$verbatim) && options$verbatim){
+    opts = gsub(",\\s*verbatim\\s*=\\s*FALSE\\s*", "", options$params.src)
+    bef = sprintf('\n\n    ```{r %s}\n', opts, "\n")
+    stringr::str_c(bef, paste(knitr:::indent_block(x, "    "), collapse = '\n'), "\n    ```\n")
+  } else {
+     hook_source_def(x, options)
+  }
+})
+```
+
+
+# Problem Description
+
+The "Splice" dataset contains 400 human donor splice sites with a sequence length of 7 base pairs. The binary variable "y" indicates whether that particular combination corresponds to a splice site or not (encoded, respectively as 1 and 0). Our challenge is to build a model that is able to predict whether a certain combination of base-pairs is likely to be a splice site. 
+
+First let us import the libraries and take a look at the data.
+
+# The Data
+```{r}
+library(grplasso)
+library(dplyr)
+library(caTools)
+library(ROCR)
+library(ggplot2)
+library(DT)
+
+data(splice)
+datatable(splice)
+```
+
+The problem with this kind of data is that, for each position, the whole set of 4 azotate-bases must be considered. Let us encode the constrasts levels corresponding to the 7 different positions.
+
+# Defining Constrasts
+
+```{r}
+
+# Define a list with the contrasts of the factors
+contr <- rep(list("contr.treatment"), ncol(splice) - 1)
+names(contr) <- names(splice)[-1]
+```
+
+
+Let us now split the data between Training Set and Test Set. We will performe a stratified sampling over the "y" variable and an 80%-20% split between Training and Test Set
+
+
+## Splitting the Data
+
+```{r}
+# Splitting dati in Training e Test Set (80-20)
+
+set.seed(1)
+sample=sample.split(splice$y,SplitRatio = 0.80)
+train_set=subset(splice,sample==TRUE)
+test_set=subset(splice,sample==FALSE)
+```
+
+## Fitting the Model
+
+We choose to fit a Logistic Group Lasso Regression Model as the target variable is binary and we want to shrink the coefficients as much as possible.
+
+```{r}
+logmodel <- grplasso(y ~ ., data = train_set, model = LogReg(), lambda = seq(15, 0, by= -1),
+                       contrasts = contr, center = TRUE, standardize = TRUE)
+
+```
+
+We are setting the model to fit 16 models subsequently. The difference between these models is the choice for the lambda penalty. Here, we progressively decrease the value for Lambda from 15 to 0 with stepsize of -1.
+
+## Coefficient path
+
+Let us plot the coefficients path. In the y-axis we have the value of the coefficients, in the x-axis we have the value for the penalty parameter lambda. We can see how as lambda progresses towards higher values, all the groups of coefficients converge to 0. 
+
+```{r}
+#Coefficient Path
+plot(logmodel)
+```
+
+## Predictions
+
+The predictions of a Logistic Regression Model are encoded between the values [0,1]. Here, we plot the values of the predictions made over the Test set by some of our models with different lambdas. Our Objective here is to see which models predicts with the most "uncertainty". That is a prediction which is neither close to 1 or 0 but closer to their mean value
+
+```{r}
+# Procedura di visualizzazione per valori multipli di lambda.
+test_predictions <- predict(logmodel, test_set[-test_set$y], type = 'response')
+test_predictions <- data.frame(test_predictions) 
+test_predictions$y <- test_set$y
+
+par(mfrow=c(2,3))
+plot(test_predictions$y, test_predictions$X15)
+plot(test_predictions$y, test_predictions$X10)
+plot(test_predictions$y, test_predictions$X5)
+plot(test_predictions$y, test_predictions$X1)
+plot(test_predictions$y, test_predictions$X0)
+```
+
+
+## Scoring of the Best Model
+
+The least uncertain model seems to be the one with lambda = .... . Let us see how well it scores in terms of ROC Curve, Area Under the Curve and Accuracy (we set a certainty treshold of 0.75 for the predictions over the Test Set)
+
+```{r}
+# ROC Curve
+par(mfrow=c(1,1))
+predictTrain <- predict(logmodel, type = 'response')
+ROCRpred = prediction(predictTrain[, 15], train_set$y)
+ROCRperf= performance(ROCRpred,'tpr','fpr')
+plot(ROCRperf, colorize=TRUE, print.cutoffs.at=seq(0,1,by=0.1),
+     text.adj=c(-0.2,2))
+
+# Area under the curve
+auc = as.numeric(performance(ROCRpred, 'auc')@y.values)
+
+# Accuracy using a threshold of 0.75
+predictTest = predict(logmodel, newdata = test_set ,type = "response")
+conf_matrix <- table(test_set$y, predictTest[, 15] >= 0.75)               # Accuracy del modello con lambda = 15
+conf_matrix
+
+accuracy <- (38+36)/(38+36+4+2)
+print(paste('Accuracy leves is:', accuracy,' ; Area Under the Curve is:', auc))
+```
+
+# Coefficient Matrix, da chiedere agli altri se inserirla o meno, alla fine è la stessa cosa del coefficient path
+```{r}
+coefficienti <- logmodel$coefficients
+coefficienti
+```
+
